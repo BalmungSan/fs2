@@ -1,11 +1,12 @@
 # I/O
 
-The `fs2-io` library provides support for performing input and output on the JVM and Node.js. This includes:
+The `fs2-io` library provides support for performing input and output on the JVM, Node.js, and Scala Native. This includes:
 - [Networking](#networking)
   - [TCP](#tcp)
   - [UDP](#udp)
   - [TLS](#tls)
 - [Files](#files)
+- [Processes](#processes)
 - [Console operations](#console-operations)
 - [Interop with `java.io.{InputStream, OutputStream}`](#java-stream-interop)
 
@@ -212,10 +213,11 @@ The UDP server implementation is much different than the TCP server implementati
 
 ## TLS
 
-The `fs2.io.net.tls` package provides support for TLS over TCP and DTLS over UDP, built on top of `javax.net.ssl`. TLS over TCP is provided by the `TLSSocket` trait, which is instantiated by `Network.tlsContext`. A `TLSContext` provides cryptographic material used in TLS session establishment -- e.g., the set of certificates that are trusted (sometimes referred to as a trust store) and optionally, the set of certificates identifying this application (sometimes referred to as a key store). The `TLSContext.Builder` trait provides many ways to construct a `TLSContext` -- for example:
-- `system(blocker)` - delegates to `javax.net.ssl.SSLContext.getDefault`, which uses the JDK default set of trusted certificates
-- `fromKeyStoreFile(pathToFile, storePassword, keyPassword, blocker)` - loads a Java Key Store file
-- `insecure(blocker)` - trusts all certificates - note: this is dangerously insecure - only use for quick tests
+The `fs2.io.net.tls` package provides support for TLS over TCP and DTLS over UDP, built on top of `javax.net.ssl` on JVM, [s2n-tls] on Scala Native, and the [`node:tls` module] on Node.js. TLS over TCP is provided by the `TLSSocket` trait, which is instantiated by `Network.tlsContext`. A `TLSContext` provides cryptographic material used in TLS session establishment -- e.g., the set of certificates that are trusted (sometimes referred to as a trust store) and optionally, the set of certificates identifying this application (sometimes referred to as a key store). The `TLSContext.Builder` trait provides many ways to construct a `TLSContext` -- for example:
+- `system` - uses the platform-specific default trust store
+  - delegates to `javax.net.ssl.SSLContext.getDefault` on JVM
+- `fromKeyStoreFile(pathToFile, storePassword, keyPassword)` - loads a Java Key Store file (JVM-only)
+- `insecure` - trusts all certificates - note: this is dangerously insecure - only use for quick tests
 
 A `TLSContext` is typically created at application startup, via `Network[F].tlsContext`, and used for all sockets for the lifetime of the application. Once a `TLSContext` has been created, the `client` and `server` methods are used to create `TLSSocket` instances (and `dtlsClient` / `dtlsServer` methods for `DTLSSocket`). In each case, a regular socket must be provided, which the `TLSSocket` will use for performing the TLS handshake as well as transmitting and receiving encrypted data. `TLSSocket` extends `fs2.io.net.Socket`, making the addition of TLS support a drop in replacement for a program using `fs2-io`.
 
@@ -352,6 +354,53 @@ def scalaLineCount[F[_]: Files: Concurrent](path: Path): F[Long] =
   }.compile.foldMonoid
 ```
 
+Note that the `Files` object is file system agnostic. It is possible to use a custom one, i.e. mounted inside JAR file, to get access to the resources. Given there's already a `java.nio.file.FileSystem` created, interacting with the files can be made possible by calling `Path.fromFsPath` to get the `Path` object.
+
+# Processes
+
+The `fs2.io.process` package provides APIs for starting and interacting with native processes. Often you are interested in the output of a process.
+
+```scala
+import cats.effect.{Concurrent, MonadCancelThrow}
+import fs2.io.process.{Processes, ProcessBuilder}
+import fs2.text
+
+def helloProcess[F[_]: Concurrent: Processes]: F[String] =
+  ProcessBuilder("echo", "Hello, process!").spawn.use { process =>
+    process.stdout.through(text.utf8.decode).compile.string
+  }
+```
+
+You can also provide input.
+
+```scala
+def wordCountProcess[F[_]: Concurrent: Processes](words: String): F[Option[Int]] =
+  ProcessBuilder("wc", "--words").spawn.use { process =>
+    val in = Stream.emit(words).through(text.utf8.encode).through(process.stdin)
+    val out = process.stdout.through(text.utf8.decode)
+    out.concurrently(in).compile.string.map(_.strip.toIntOption)
+  }
+```
+
+Or just wait for a process to complete and get the exit code.
+
+```scala
+def sleepProcess[F[_]: MonadCancelThrow: Processes]: F[Int] =
+  ProcessBuilder("sleep", "1s").spawn.use(_.exitValue)
+```
+
+To terminate a running process, simply exit the `use` block.
+
+```scala
+import cats.effect.Temporal
+import scala.concurrent.duration._
+
+def oneSecondServer[F[_]: Temporal: Processes]: F[Unit] =
+  ProcessBuilder("python", "-m", "http.server").spawn.surround {
+    Temporal[F].sleep(1.second)
+  }
+```
+
 # Console Operations
 
 Writing to the console is often as simple as `s.evalMap(o => IO.println(o))`. This works fine for quick tests but can be problematic in large applications. The call to `println` blocks until data can be written to the output stream for standard out. This can cause fairness issues with other, non-blocking, operations running on the main thread pool. For such situations, `fs2-io` provides a couple of utilities:
@@ -385,3 +434,6 @@ The `fs2.io.readInputStream` method (and `unsafeReadInputStream` method, see Sca
 The `fs2.io.writeOutputStream` method provides a pipe that writes the bytes emitted from a `Stream[F, Byte]` to an `OutputStream`.
 
 The `fs2.io.readOutputStream` method creates a `Stream[F, Byte]` from a function which writes to an `OutputStream`.
+
+[s2n-tls]: https://github.com/aws/s2n-tls
+[`node:tls` module]: https://nodejs.org/api/tls.html
