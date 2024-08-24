@@ -2,7 +2,7 @@ import com.typesafe.tools.mima.core._
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
-ThisBuild / tlBaseVersion := "3.10"
+ThisBuild / tlBaseVersion := "3.11"
 
 ThisBuild / organization := "co.fs2"
 ThisBuild / organizationName := "Functional Streams for Scala"
@@ -36,9 +36,7 @@ ThisBuild / githubWorkflowAddedJobs +=
     javas = List(githubWorkflowJavaVersions.value.head),
     oses = List("macos-latest"),
     matrixAdds = Map("project" -> List("ioJS", "ioJVM", "ioNative")),
-    steps = List(
-      WorkflowStep.Run(List("brew install sbt"))
-    ) ++ githubWorkflowJobSetup.value.toList ++ List(
+    steps = githubWorkflowJobSetup.value.toList ++ List(
       WorkflowStep.Run(List("brew install s2n"), cond = Some("matrix.project == 'ioNative'")),
       WorkflowStep.Sbt(List("${{ matrix.project }}/test"))
     )
@@ -253,7 +251,12 @@ ThisBuild / mimaBinaryIssueFilters ++= Seq(
   ),
   ProblemFilters.exclude[ReversedMissingMethodProblem](
     "fs2.io.file.PosixFileAttributes.fs2$io$file$PosixFileAttributes$$super#Code"
-  )
+  ),
+  // moved openssl/crypto bindings to fs2.hashing: #3454
+  ProblemFilters.exclude[DirectMissingMethodProblem]("fs2.hash.createHash"),
+  ProblemFilters.exclude[MissingClassProblem]("fs2.hash$Hash"),
+  ProblemFilters.exclude[MissingFieldProblem]("fs2.hash.openssl"),
+  ProblemFilters.exclude[MissingClassProblem]("fs2.hash$openssl$")
 )
 
 lazy val root = tlCrossRootProject
